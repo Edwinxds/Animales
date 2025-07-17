@@ -14,15 +14,15 @@
         // *******************************************************************
         // ********************** CONFIGURACIÓN DE FIREBASE ******************
         // *******************************************************************
-        // ** REEMPLAZA ESTOS VALORES CON LOS DE TU PROYECTO DE FIREBASE **
-        // ** Los obtienes desde Project settings -> Your apps -> Web app -> Config **
+        // ** ESTOS VALORES HAN SIDO REEMPLAZADOS CON LOS DE TU PROYECTO DE FIREBASE **
         const firebaseConfig = {
-          apiKey: "AIzaSyA3T9xcuZVzHOIPIolqQpc3CVxDPDeT4ls", // Ejemplo: "AIzaSyD-..."
-          authDomain: "adivinaelanimalapp.firebaseapp.com", // Ejemplo: "tu-proyecto.firebaseapp.com"
-          projectId: "adivinaelanimalapp", // Ejemplo: "tu-proyecto-12345"
-          storageBucket: "adivinaelanimalapp.firebasestorage.app", // Ejemplo: "tu-proyecto-12345.appspot.com"
-          messagingSenderId: "54038365590", // Ejemplo: "1234567890"
-          appId: "1:54038365590:web:163df4959d02e78f00c9b7" // Ejemplo: "1:1234567890:web:abcdef12345"
+          apiKey: "AIzaSyA3T9xcuZVzHOIPIolqQpc3CVxDPDeT4ls",
+          authDomain: "adivinaelanimalapp.firebaseapp.com",
+          databaseURL: "https://adivinaelanimalapp-default-rtdb.firebaseio.com",
+          projectId: "adivinaelanimalapp",
+          storageBucket: "adivinaelanimalapp.firebasestorage.app",
+          messagingSenderId: "54038365590",
+          appId: "1:54038365590:web:05c00904d8f175c900c9b7"
         };
 
         // Para el appId en la ruta de la base de datos, usaremos el projectId.
@@ -44,6 +44,7 @@
         async function initializeFirebase() {
             try {
                 // Solo inicializar si firebaseConfig tiene valores válidos
+                // Ahora esta comprobación se basa en que los valores ya no sean los placeholders
                 if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "TU_API_KEY_AQUI") {
                     console.error("Firebase config no está completo. La funcionalidad de base de datos no estará disponible.");
                     isFirebaseInitialized = false;
@@ -530,7 +531,7 @@
             <h1 class="text-5xl font-extrabold text-text-dark mb-8">¡Adivina el Animal!</h1>
             <p class="text-2xl font-semibold text-text-dark mb-6">Elige un modo de juego:</p>
             <div class="flex flex-col space-y-4 mb-8">
-                <button id="mode-sound-button" class="button-success" data-mode="sound">Adivina el Sonido</</button>
+                <button id="mode-sound-button" class="button-success" data-mode="sound">Adivina el Sonido</button>
                 <button id="mode-name-button" class="button-success" data-mode="name">¿Dónde está el...?</button>
             </div>
             <p id="high-score-label" class="text-xl font-medium text-gray-600 mb-4">Puntuación más alta: 0</p>
@@ -1296,7 +1297,7 @@
             <h1 class="text-5xl font-extrabold text-text-dark mb-8">¡Adivina el Animal!</h1>
             <p class="text-2xl font-semibold text-text-dark mb-6">Elige un modo de juego:</p>
             <div class="flex flex-col space-y-4 mb-8">
-                <button id="mode-sound-button" class="button-success" data-mode="sound">Adivina el Sonido</</button>
+                <button id="mode-sound-button" class="button-success" data-mode="sound">Adivina el Sonido</button>
                 <button id="mode-name-button" class="button-success" data-mode="name">¿Dónde está el...?</button>
             </div>
             <p id="high-score-label" class="text-xl font-medium text-gray-600 mb-4">Puntuación más alta: 0</p>
