@@ -89,6 +89,9 @@
             }
         }
 
+        // Hacer initializeFirebase globalmente accesible
+        window.initializeFirebase = initializeFirebase;
+
         async function loadUserDataFromFirestoreInternal() {
             if (!isFirebaseInitialized || !userId) return;
             try {
@@ -518,7 +521,7 @@
             <p class="text-xl font-semibold text-gray-700 mb-6">Por favor, introduce tu nombre y edad:</p>
             <div class="flex flex-col space-y-4 mb-8">
                 <input type="text" id="user-name-input" placeholder="Tu Nombre" class="p-4 border-2 border-border-light rounded-xl text-lg text-text-dark focus:outline-none focus:ring-2 focus:ring-button-main">
-                <input type="number" id="user-age-input" placeholder="Tu Edad" class="p-4 border-2 border-border-light rounded-xl text-lg text-text-dark focus:outline-none focus:ring-2 focus:ring-button-main">
+                <input type="number" id="user-age-input" placeholder="Tu Edad" class="p-4 border-2 border-border-light rounded-xl text-lg text-lg text-text-dark focus:outline-none focus:ring-2 focus:ring-button-main">
             </div>
             <button id="start-user-details-button" class="button-success">Comenzar</button>
         </div>
@@ -971,7 +974,7 @@
         // Se adjuntan los event listeners DESPUÉS de que Firebase y los recursos estén listos
         document.addEventListener('DOMContentLoaded', async () => {
             // 1. Inicializar Firebase (la parte síncrona que asigna 'auth' y 'db')
-            await initializeFirebase(); 
+            await window.initializeFirebase(); // Ahora se llama a través de window
 
             // 2. Precargar recursos (puede ejecutarse en paralelo con el cambio de estado de autenticación)
             await preloadAssets();
