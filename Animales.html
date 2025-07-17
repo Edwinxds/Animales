@@ -8,7 +8,7 @@
     <script type="module">
         // Importar módulos de Firebase
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // *******************************************************************
@@ -61,22 +61,21 @@
                     if (user) {
                         userId = user.uid;
                         console.log("Firebase Auth Ready. User ID:", userId);
-                        isFirebaseInitialized = true; // ¡Ahora se establece en true aquí!
+                        isFirebaseInitialized = true; // ¡Ahora se establece en true aquí, solo cuando hay un usuario!
                         // Cargar datos de usuario si ya existen después de la autenticación
                         await loadUserDataFromFirestoreInternal();
                         // Cargar la puntuación más alta y la tabla de puntuaciones una vez que Firebase esté listo
                         await loadHighScore(); 
                         window.loadLeaderboardFromFirestore('start-leaderboard-list');
                     } else {
-                        // Si no hay usuario, intentar iniciar sesión anónimamente
-                        // La promesa de signInAnonymously debe resolverse para que onAuthStateChanged se active
-                        // con un usuario (aunque sea anónimo).
-                        try {
-                            await signInAnonymously(auth);
-                        } catch (anonError) {
-                            console.error("Error al iniciar sesión anónimamente:", anonError);
-                            isFirebaseInitialized = false; // Si falla la autenticación anónima, Firebase no está listo.
-                        }
+                        // Si no hay usuario, Firebase no está listo para operaciones de datos.
+                        // No intentamos iniciar sesión anónimamente aquí automáticamente.
+                        isFirebaseInitialized = false;
+                        userId = null; // Limpiar userId si no hay usuario
+                        console.warn("No hay usuario autenticado. Las operaciones de Firestore serán limitadas hasta que el usuario inicie sesión.");
+                        // Mostrar mensaje de carga/error en el leaderboard si Firebase no está listo
+                        const leaderboardList = document.getElementById('start-leaderboard-list');
+                        if (leaderboardList) leaderboardList.innerHTML = '<p class="text-red-500">Firebase no está inicializado. No se puede cargar la tabla de puntuaciones.</p>';
                     }
                 });
             } catch (error) {
@@ -372,7 +371,7 @@
         }
         .button-success:active {
             transform: translateY(1px) scale(0.98);
-            box_shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
         }
 
         /* Estilos para los botones de opción de animal */
@@ -980,11 +979,32 @@
             const age = parseInt(userAgeInput.value, 10);
 
             if (name && !isNaN(age) && age > 0) {
-                window.setUserNameAndAge(name, age); // Actualizar datos de usuario globales
-                await window.saveUserDataToFirestore(name, age); // Guardar en Firestore (o advertir si no está listo)
-                // Se eliminó la llamada a loadHighScore() y loadLeaderboardFromFirestore() aquí,
-                // ya que ahora se gestionan en el onAuthStateChanged de Firebase para asegurar la inicialización.
-                showScreen(startScreen);
+                if (!auth) { // Asegurarse de que el objeto auth esté disponible
+                    console.error("Firebase Auth no está disponible. No se puede iniciar sesión.");
+                    alert("Error: Firebase Auth no está listo. Intenta recargar la página.");
+                    return;
+                }
+
+                try {
+                    // Iniciar sesión anónimamente de forma explícita aquí
+                    // Esto activará el listener onAuthStateChanged
+                    await signInAnonymously(auth);
+                    
+                    // En este punto, onAuthStateChanged debería haberse disparado y establecido
+                    // isFirebaseInitialized = true, y cargado los datos iniciales.
+                    
+                    window.setUserNameAndAge(name, age); // Actualizar datos de usuario globales
+                    await window.saveUserDataToFirestore(name, age); // Guardar en Firestore
+
+                    showScreen(startScreen); // Mover a la pantalla de inicio
+                } catch (error) {
+                    console.error("Error al iniciar sesión y guardar datos:", error);
+                    alert("Hubo un error al iniciar sesión o guardar tus datos. Por favor, inténtalo de nuevo.");
+                    isFirebaseInitialized = false; // Asegurarse de que la bandera sea false si falla el inicio de sesión
+                    // Volver a mostrar el mensaje de error en el leaderboard si se borró
+                    const leaderboardList = document.getElementById('start-leaderboard-list');
+                    if (leaderboardList) leaderboardList.innerHTML = '<p class="text-red-500">Error al iniciar sesión o cargar la tabla de puntuaciones.</p>';
+                }
             } else {
                 alert("Por favor, introduce un nombre y una edad válida.");
             }
