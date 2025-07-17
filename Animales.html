@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adivina el Animal</title>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        // Importar módulos de Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variables globales de Firebase (proporcionadas por el entorno Canvas)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        let app;
+        let db;
+        let auth;
+        let userId;
+        let userName = "Anónimo"; // Nombre predeterminado
+        let userAge = 0; // Edad predeterminada
+
+        let isFirebaseInitialized = false; // Bandera para verificar si Firebase está listo
+
+        // Función para inicializar Firebase y manejar la autenticación
+        async function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Escuchar cambios en el estado de autenticación
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("Firebase Auth Ready. User ID:", userId);
+                        isFirebaseInitialized = true;
+                        // Cargar datos de usuario si ya existen después de la autenticación
+                        await loadUserDataFromFirestoreInternal();
+                    } else {
+                        // Iniciar sesión anónimamente si no hay usuario logueado
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Error al inicializar Firebase. La funcionalidad de base de datos será limitada:", error);
+                isFirebaseInitialized = false; // Marcar explícitamente como no inicializado si hay un error
+            }
+        }
+
+        // Función interna para cargar datos de usuario desde Firestore
+        async function loadUserDataFromFirestoreInternal() {
+            if (!isFirebaseInitialized || !userId) return;
+            try {
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'userProfiles', userId);
+                const docSnap = await getDoc(userDocRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    userName = data.userName || "Anónimo";
+                    userAge = data.userAge || 0;
+                    console.log("Datos de usuario cargados de Firestore:", userName, userAge);
+                    // Pre-llenar campos de entrada si existen y los datos de usuario están cargados
+                    if (window.userNameInput) window.userNameInput.value = userName;
+                    if (window.userAgeInput) window.userAgeInput.value = userAge;
+                }
+            } catch (e) {
+                console.error("Error al cargar datos de usuario de Firestore:", e);
+            }
+        }
+
+        // Exponer funciones y variables relacionadas con Firebase al ámbito global
+        window.currentUserId = () => userId;
+        window.currentUserName = () => userName;
+        window.currentUserAge = () => userAge;
+        window.isFirebaseReady = () => isFirebaseInitialized;
+        window.setUserNameAndAge = (name, age) => { userName = name; userAge = age; };
+
+        // Función para guardar datos de usuario en Firestore
+        window.saveUserDataToFirestore = async (name, age) => {
+            if (!isFirebaseInitialized || !userId) {
+                console.warn("Firebase no está inicializado o el usuario no está autenticado. No se guardarán los datos de usuario en Firestore.");
+                return;
+            }
+            try {
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'userProfiles', userId);
+                await setDoc(userDocRef, { userName: name, userAge: age, lastUpdated: serverTimestamp() }, { merge: true });
+                console.log("Datos de usuario guardados en Firestore.");
+            } catch (e) {
+                console.error("Error al guardar datos de usuario en Firestore:", e);
+            }
+        };
+
+        // Función para guardar la puntuación alta en Firestore (con fallback a localStorage)
+        window.saveHighScoreToFirestore = async (newScore) => {
+            // Siempre actualizar localStorage primero como un respaldo fiable
+            const storedHighScore = localStorage.getItem('animalQuizHighScore');
+            if (newScore > (parseInt(storedHighScore, 10) || 0)) {
+                localStorage.setItem('animalQuizHighScore', newScore.toString());
+                window.currentHighScore = newScore; // Actualizar puntuación alta global en el script principal
+                if (window.highScoreLabel) window.highScoreLabel.textContent = `Puntuación más alta: ${window.currentHighScore}`;
+            }
+
+            if (!isFirebaseInitialized || !userId) {
+                console.warn("Firebase no está inicializado o el usuario no está autenticado. La puntuación alta solo se guardará localmente.");
+                return;
+            }
+            try {
+                const userHighScoreRef = doc(db, 'artifacts', appId, 'public', 'data', 'userHighScores', userId);
+                const docSnap = await getDoc(userHighScoreRef);
+                let currentBestScore = 0;
+                if (docSnap.exists()) {
+                    currentBestScore = docSnap.data().score || 0;
+                }
+                if (newScore > currentBestScore) {
+                    await setDoc(userHighScoreRef, {
+                        userId: userId,
+                        userName: userName,
+                        userAge: userAge,
+                        score: newScore,
+                        lastUpdated: serverTimestamp()
+                    }, { merge: true });
+                    console.log("Puntuación alta guardada en Firestore.");
+                } else {
+                    console.log("La puntuación actual no supera la puntuación alta existente en Firestore.");
+                }
+            } catch (e) {
+                console.error("Error al guardar la puntuación alta en Firestore: ", e);
+            }
+        };
+
+        // Función para cargar la puntuación alta desde Firestore (con fallback a localStorage)
+        window.loadHighScoreFromFirestore = async () => {
+            if (!isFirebaseInitialized || !userId) {
+                console.warn("Firebase no está inicializado o el usuario no está autenticado. Cargando puntuación alta de localStorage.");
+                const storedHighScore = localStorage.getItem('animalQuizHighScore');
+                return parseInt(storedHighScore, 10) || 0;
+            }
+            try {
+                const userHighScoreRef = doc(db, 'artifacts', appId, 'public', 'data', 'userHighScores', userId);
+                const docSnap = await getDoc(userHighScoreRef);
+                if (docSnap.exists()) {
+                    return docSnap.data().score || 0;
+                }
+                return 0;
+            } catch (e) {
+                console.error("Error al cargar la puntuación alta de Firestore: ", e);
+                return 0;
+            }
+        };
+
+        // Función para cargar la tabla de puntuaciones desde Firestore
+        window.loadLeaderboardFromFirestore = async (targetElementId) => {
+            const leaderboardList = document.getElementById(targetElementId);
+            if (!leaderboardList) {
+                console.error(`Elemento de lista de tabla de puntuaciones con ID '${targetElementId}' no encontrado.`);
+                return [];
+            }
+            leaderboardList.innerHTML = '<p class="text-gray-600">Cargando puntuaciones...</p>';
+
+            if (!isFirebaseInitialized) {
+                leaderboardList.innerHTML = '<p class="text-red-500">Firebase no está inicializado. No se puede cargar la tabla de puntuaciones.</p>';
+                console.warn("Firebase no está inicializado. No se puede cargar la tabla de puntuaciones.");
+                return [];
+            }
+
+            try {
+                const scoresCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'userHighScores');
+                const q = query(scoresCollectionRef, orderBy('score', 'desc'), limit(10));
+                const querySnapshot = await getDocs(q);
+                const leaderboard = [];
+                querySnapshot.forEach(doc => {
+                    leaderboard.push(doc.data());
+                });
+
+                leaderboardList.innerHTML = ''; // Limpiar mensaje de carga
+                if (leaderboard.length === 0) {
+                    leaderboardList.innerHTML = '<p class="text-gray-600">No hay puntuaciones aún. ¡Sé el primero!</p>';
+                } else {
+                    const ul = document.createElement('ul');
+                    ul.className = 'list-none p-0 m-0';
+                    leaderboard.forEach((data, index) => {
+                        const li = document.createElement('li');
+                        li.className = 'flex justify-between items-center py-2 px-3 border-b border-gray-200 last:border-b-0';
+                        li.innerHTML = `
+                            <span class="font-bold text-lg text-text-dark">${index + 1}. ${data.userName || 'Anónimo'}</span>
+                            <span class="text-xl text-button-main">${data.score || 0}</span>
+                        `;
+                        ul.appendChild(li);
+                    });
+                    leaderboardList.appendChild(ul);
+                }
+                console.log("Tabla de puntuaciones cargada de Firestore.");
+                return leaderboard;
+            } catch (e) {
+                console.error("Error al cargar la tabla de puntuaciones de Firestore: ", e);
+                leaderboardList.innerHTML = '<p class="text-red-500">Error al cargar la tabla de puntuaciones.</p>';
+                return [];
+            }
+        };
+
+        // Llamar a la inicialización de Firebase cuando el DOM esté completamente cargado
+        // Esto se ejecuta en paralelo con el DOMContentLoaded del script principal
+        document.addEventListener('DOMContentLoaded', initializeFirebase);
+    </script>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Fredoka (Nueva fuente caricaturesca) -->
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <style type="text/tailwindcss">
+        /* Definición de la paleta de colores personalizada de Tailwind */
+        @layer base {
+            :root {
+                --color-primary-bg: #E0F2F7; /* Azul cielo claro */
+                --color-card-bg: #FFFFFF;   /* Blanco puro */
+                --color-button-main: #60A5FA; /* Azul vibrante */
+                --color-button-hover: #3B82F6; /* Azul más oscuro al pasar el ratón */
+                --color-button-accent: #34D399; /* Verde menta */
+                --color-button-accent-hover: #10B981; /* Verde más oscuro al pasar el ratón */
+                --color-text-dark: #1F2937; /* Gris oscuro casi negro */
+                --color-text-light: #F9FAFB; /* Gris muy claro */
+                --color-border-light: #D1D5DB; /* Gris claro para bordes */
+                --color-feedback-correct: #10B981; /* Verde para correcto */
+                --color-feedback-incorrect: #EF4444; /* Rojo para incorrecto */
+            }
+        }
+    </style>
+    <script>
+        // Configuración de Tailwind CSS para usar los colores personalizados
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-bg': 'var(--color-primary-bg)',
+                        'card-bg': 'var(--color-card-bg)',
+                        'button-main': 'var(--color-button-main)',
+                        'button-hover': 'var(--color-button-hover)',
+                        'button-accent': 'var(--color-button-accent)',
+                        'button-accent-hover': 'var(--color-button-accent-hover)',
+                        'text-dark': 'var(--color-text-dark)',
+                        'text-light': 'var(--color-text-light)',
+                        'border-light': 'var(--color-border-light)',
+                        'feedback-correct': 'var(--color-feedback-correct)',
+                        'feedback-incorrect': 'var(--color-feedback-incorrect)',
+                    },
+                    fontFamily: {
+                        sans: ['Fredoka', 'sans-serif'], // Establece Fredoka como fuente principal
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Estilos generales para el cuerpo de la página */
+        body {
+            font-family: 'Fredoka', sans-serif; /* Aplica la nueva fuente */
+            background-color: var(--color-primary-bg); /* Fondo azul cielo claro */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow: hidden; /* Evita barras de desplazamiento no deseadas */
+        }
+        /* Estilos para el contenedor principal de la aplicación */
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background-color: var(--color-card-bg); /* Fondo blanco */
+            border-radius: 30px; /* Bordes más redondeados */
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.15); /* Sombra más pronunciada */
+            padding: 30px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            border: 4px solid var(--color-border-light); /* Borde visible */
+        }
+        /* Estilos para las pantallas (inicio, juego, resultados, carga) */
+        .screen {
+            display: none; /* Oculta todas las pantallas por defecto */
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.5s ease-out, transform 0.5s ease-out; /* Transición para pantallas */
+        }
+        .screen.active {
+            display: block;
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* Estilos para el botón principal (azul) */
+        .button-primary {
+            background-color: var(--color-button-main);
+            color: var(--color-text-light);
+            font-weight: 700; /* Bold */
+            padding: 16px 32px; /* Más padding */
+            border-radius: 1.5rem; /* rounded-2xl */
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2); /* Sombra más grande */
+            transition: all 0.2s ease-in-out;
+            border: 2px solid var(--color-button-hover); /* Borde sutil */
+        }
+        .button-primary:hover {
+            background-color: var(--color-button-hover);
+            transform: translateY(-3px) scale(1.02); /* Efecto de elevación y escala */
+            box-shadow: 0 12px 20px rgba(0, 0, 0, 0.3);
+        }
+        .button-primary:active {
+            transform: translateY(1px) scale(0.98); /* Efecto de presión */
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Estilos para el botón de éxito (verde) */
+        .button-success {
+            background-color: var(--color-button-accent);
+            color: var(--color-text-light);
+            font-weight: 700;
+            padding: 16px 32px;
+            border-radius: 1.5rem; /* rounded-2xl */
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s ease-in-out;
+            border: 2px solid var(--color-button-accent-hover);
+        }
+        .button-success:hover {
+            background-color: var(--color-button-accent-hover);
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 12px 20px rgba(0, 0, 0, 0.3);
+        }
+        .button-success:active {
+            transform: translateY(1px) scale(0.98);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Estilos para los botones de opción de animal */
+        .button-option {
+            background-color: var(--color-card-bg); /* Fondo blanco */
+            padding: 1rem; /* p-4 */
+            border-radius: 1.5rem; /* rounded-2xl */
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1); /* Sombra más suave */
+            transition: all 0.2s ease-in-out;
+            border: 2px solid var(--color-border-light); /* Borde visible */
+        }
+        .button-option:hover {
+            background-color: #F3F4F6; /* Gris muy claro al pasar el ratón */
+            transform: translateY(-2px) scale(1.03); /* Efecto de elevación y escala */
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.15);
+        }
+        .button-option:active {
+            transform: translateY(1px) scale(0.97);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        .button-option img {
+            border-radius: 1rem; /* Bordes redondeados para las imágenes dentro de los botones */
+            border: 2px solid var(--color-border-light); /* Borde para las imágenes */
+            transition: transform 0.2s ease-in-out;
+        }
+        .button-option:hover img {
+            transform: scale(1.05); /* Escala la imagen al pasar el ratón */
+        }
+
+        /* Animación para el feedback (correcto/incorrecto) */
+        @keyframes feedback-animation {
+            0% { transform: scale(0.5) translateY(20px); opacity: 0; }
+            50% { transform: scale(1.1) translateY(0); opacity: 1; }
+            100% { transform: scale(1) translateY(0); opacity: 1; }
+        }
+        .animate-feedback {
+            animation: feedback-animation 0.5s ease-out forwards;
+        }
+        /* Estilos para la barra de progreso */
+        #progress-bar-container {
+            @apply w-full bg-gray-200 rounded-full h-3 mb-6;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1); /* Sombra interior para profundidad */
+        }
+        #progress-bar {
+            background-color: var(--color-button-main); /* Color de la barra de progreso */
+            height: 100%;
+            border-radius: 9999px; /* rounded-full */
+            transition: width 0.3s ease-out;
+        }
+        /* Estilos para el botón de sonido cuando está reproduciendo */
+        .playing-sound {
+            background-color: var(--color-button-hover); /* Color más oscuro */
+            box-shadow: 0 0 20px var(--color-button-main); /* Efecto de brillo */
+            animation: pulse-glow 1s infinite alternate; /* Animación de pulso con brillo */
+        }
+        @keyframes pulse-glow {
+            from { box-shadow: 0 0 15px var(--color-button-main); }
+            to { box-shadow: 0 0 25px var(--color-button-main), 0 0 35px var(--color-button-main); }
+        }
+
+        /* Feedback area positioning for image and text */
+        #feedback-area {
+            display: flex;
+            flex-direction: column; /* Apilar imagen y texto verticalmente */
+            align-items: center; /* Centrar horizontalmente */
+            justify-content: center; /* Centrar verticalmente */
+            min-height: 160px; /* Usar min-height para permitir que el contenido se expanda */
+            position: relative;
+        }
+        #feedback-image {
+            transition: opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
+        }
+        #feedback-text {
+            width: 100%; /* Asegurar que el texto ocupe todo el ancho para centrar */
+            text-align: center;
+            transition: opacity 0.5s ease-in-out;
+            margin-top: 8px; /* Pequeño margen entre imagen y texto */
+            z-index: 10; 
+        }
+
+        /* Estilos para la lista de la tabla de puntuaciones */
+        .leaderboard-list-container {
+            background-color: #F9FAFB; /* Gris muy claro para el fondo de la tabla */
+            border-radius: 1rem; /* rounded-xl */
+            border: 2px solid var(--color-border-light); /* Borde visible */
+            padding: 1rem; /* p-4 */
+            box-shadow: inset 0 1px 5px rgba(0,0,0,0.05); /* Sombra interior sutil */
+            max-height: 200px; /* Altura máxima para scroll */
+            overflow-y: auto; /* Scroll si el contenido excede la altura */
+        }
+        .leaderboard-list-container ul {
+            list-style: none; /* Eliminar viñetas */
+            padding: 0;
+            margin: 0;
+        }
+        .leaderboard-list-container li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            border-bottom: 1px solid #E5E7EB; /* tailwind gray-200 */
+            font-size: 1rem; /* text-base */
+            color: var(--color-text-dark);
+        }
+        .leaderboard-list-container li:last-child {
+            border-bottom: none;
+        }
+        .leaderboard-list-container li span:first-child {
+            font-weight: 600; /* font-semibold */
+        }
+        .leaderboard-list-container li span:last-child {
+            font-weight: 700; /* font-bold */
+            color: var(--color-button-main);
+        }
+
+        /* Estilos específicos para el diseño de la pantalla de resultados */
+        #result-screen-content {
+            display: flex;
+            flex-direction: column; /* Por defecto a columna para pantallas pequeñas */
+            gap: 20px;
+            align-items: center;
+        }
+        @media (min-width: 640px) { /* sm breakpoint */
+            #result-screen-content {
+                flex-direction: row; /* Diseño de fila para pantallas más grandes */
+                align-items: flex-start; /* Alinear elementos a la parte superior */
+            }
+            #result-main-column {
+                flex: 7; /* 70% de ancho */
+                min-width: 0; /* Permitir que el contenido se encoja */
+            }
+            #result-leaderboard-column {
+                flex: 3; /* 30% de ancho */
+                min-width: 0; /* Permitir que el contenido se encoja */
+                border-left: 2px solid var(--color-border-light); /* Borde divisor */
+                padding-left: 20px; /* Espacio después del borde */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container" class="container">
+
+        <!-- Loading Screen (Pantalla de Carga) -->
+        <div id="loading-screen" class="screen active">
+            <h1 class="text-4xl font-bold text-text-dark mb-6">Cargando recursos...</h1>
+            <div class="flex justify-center items-center">
+                <i class="fas fa-spinner fa-spin text-button-main text-5xl"></i>
+            </div>
+            <p id="loading-progress" class="mt-4 text-gray-600">0%</p>
+        </div>
+
+        <!-- User Details Screen -->
+        <div id="user-detail-screen" class="screen">
+            <h1 class="text-4xl font-extrabold text-text-dark mb-8">¡Bienvenido!</h1>
+            <p class="text-xl font-semibold text-gray-700 mb-6">Por favor, introduce tu nombre y edad:</p>
+            <div class="flex flex-col space-y-4 mb-8">
+                <input type="text" id="user-name-input" placeholder="Tu Nombre" class="p-4 border-2 border-border-light rounded-xl text-lg text-text-dark focus:outline-none focus:ring-2 focus:ring-button-main">
+                <input type="number" id="user-age-input" placeholder="Tu Edad" class="p-4 border-2 border-border-light rounded-xl text-lg text-text-dark focus:outline-none focus:ring-2 focus:ring-button-main">
+            </div>
+            <button id="start-user-details-button" class="button-success">Comenzar</button>
+        </div>
+
+        <!-- Start Screen (Pantalla de Inicio) -->
+        <div id="start-screen" class="screen">
+            <h1 class="text-5xl font-extrabold text-text-dark mb-8">¡Adivina el Animal!</h1>
+            <p class="text-2xl font-semibold text-text-dark mb-6">Elige un modo de juego:</p>
+            <div class="flex flex-col space-y-4 mb-8">
+                <button id="mode-sound-button" class="button-success" data-mode="sound">Adivina el Sonido</</button>
+                <button id="mode-name-button" class="button-success" data-mode="name">¿Dónde está el...?</button>
+            </div>
+            <p id="high-score-label" class="text-xl font-medium text-gray-600 mb-4">Puntuación más alta: 0</p>
+            
+            <!-- Leaderboard on Start Screen -->
+            <h2 class="text-3xl font-bold text-text-dark mb-4">Top Puntuaciones</h2>
+            <div id="start-leaderboard-list" class="leaderboard-list-container">
+                <p class="text-gray-600">Cargando puntuaciones...</p>
+            </div>
+        </div>
+
+        <!-- Game Screen (Pantalla de Juego) -->
+        <div id="game-screen" class="screen">
+            <div class="flex justify-between items-center mb-4">
+                <p id="score-label" class="text-2xl font-semibold text-text-dark">Puntuación: 0</p>
+                <p id="question-count-label" class="text-2xl font-semibold text-text-dark">Pregunta: 0/10</p>
+            </div>
+
+            <!-- Progress Bar -->
+            <div id="progress-bar-container">
+                <div id="progress-bar" style="width: 0%;"></div>
+            </div>
+
+            <!-- Question Area (dynamic content based on game mode) -->
+            <div id="question-area" class="mb-8">
+                <!-- Content will be injected here by JavaScript -->
+            </div>
+
+            <div id="options-grid" class="grid grid-cols-2 gap-4 mb-8">
+                <!-- Animal image options will be generated here by JavaScript -->
+            </div>
+
+            <!-- Feedback area for correct/incorrect answers -->
+            <div id="feedback-area">
+                <img id="feedback-image" src="" alt="Feedback" class="h-32 w-32 object-contain rounded-lg opacity-0">
+                <p id="feedback-text" class="text-3xl font-bold mt-2 opacity-0"></p>
+            </div>
+        </div>
+
+        <!-- Result Screen (Pantalla de Resultados) -->
+        <div id="result-screen" class="screen">
+            <h1 class="text-5xl font-extrabold text-text-dark mb-8">¡Juego Terminado!</h1>
+            <div id="result-screen-content" class="flex flex-col sm:flex-row gap-4 sm:gap-8 justify-center items-stretch">
+                <!-- Main Result Column (70%) -->
+                <div id="result-main-column" class="flex flex-col items-center flex-grow sm:flex-[7] p-4">
+                    <p id="final-score-label" class="text-4xl font-semibold text-text-dark mb-6">Tu puntuación final: 0</p>
+                    <p id="final-high-score-label" class="text-2xl font-medium text-gray-600 mb-8">Puntuación más alta: 0</p>
+                    <button id="play-again-button" class="button-success w-full max-w-xs">Jugar de Nuevo</button>
+                </div>
+
+                <!-- Leaderboard Column (30%) -->
+                <div id="result-leaderboard-column" class="flex flex-col flex-grow sm:flex-[3] p-4">
+                    <h2 class="text-3xl font-bold text-text-dark mb-4">Top Puntuaciones</h2>
+                    <div id="result-leaderboard-list" class="leaderboard-list-container">
+                        <p class="text-gray-600">Cargando puntuaciones...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Referencias a elementos del DOM
+        const loadingScreen = document.getElementById('loading-screen');
+        const loadingProgress = document.getElementById('loading-progress');
+        const userDetailScreen = document.getElementById('user-detail-screen');
+        const userNameInput = document.getElementById('user-name-input');
+        const userAgeInput = document.getElementById('user-age-input');
+        const startUserDetailsButton = document.getElementById('start-user-details-button');
+
+        const startScreen = document.getElementById('start-screen');
+        const modeSoundButton = document.getElementById('mode-sound-button');
+        const modeNameButton = document.getElementById('mode-name-button');
+        const highScoreLabel = document.getElementById('high-score-label');
+        const startLeaderboardList = document.getElementById('start-leaderboard-list'); // Elemento para la tabla en la pantalla de inicio
+
+        const gameScreen = document.getElementById('game-screen');
+        let playSoundButton; // Se asignará dinámicamente
+
+        const optionsGrid = document.getElementById('options-grid');
+        const scoreLabel = document.getElementById('score-label');
+        const questionCountLabel = document.getElementById('question-count-label');
+        const progressBar = document.getElementById('progress-bar');
+        const questionArea = document.getElementById('question-area');
+
+        const feedbackImage = document.getElementById('feedback-image');
+        const feedbackText = document.getElementById('feedback-text');
+        
+        const resultScreen = document.getElementById('result-screen'); // Referencia a la pantalla de resultados
+        const finalScoreLabel = document.getElementById('final-score-label');
+        const finalHighScoreLabel = document.getElementById('final-high-score-label');
+        const playAgainButton = document.getElementById('play-again-button');
+        const resultLeaderboardList = document.getElementById('result-leaderboard-list'); // Elemento para la tabla en la pantalla de resultados
+
+        // Variables del juego
+        let score = 0;
+        let questionCount = 0;
+        const maxQuestions = 10;
+        let currentAnimal = null;
+        let animalsToPlay = [];
+        let currentAudio = null; // Variable para almacenar el objeto de audio actual
+        let gameMode = 'sound'; // Modo de juego predeterminado: 'sound' o 'name'
+        let currentHighScore = 0;
+
+        // Datos de los animales con URLs de Cloudinary
+        const animalsData = [
+            {
+                name: "Caballo",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256398/caballo_dgxuhs.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256398/caballo_lphtk3.png"
+            },
+            {
+                name: "Elefante",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256398/elefante_qq8tj0.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256398/elefante_k25a99.png"
+            },
+            {
+                name: "Gallina",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256399/gallina_cqlosx.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256399/gallina_qcpwsq.png"
+            },
+            {
+                name: "Gato",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256398/gato_l9zqwv.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256398/gato_vjck0q.png"
+            },
+            {
+                name: "León",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256399/leon_oom4i7.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256399/leon_iqn5q4.png"
+            },
+            {
+                name: "Mono",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256399/mono_pslzmy.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256399/mono_bdnvtr.png"
+            },
+            {
+                name: "Oso",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256400/oso_hcul8u.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256400/oso_i0rz2z.png"
+            },
+            {
+                name: "Perro",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256400/perro_liw9fn.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256400/perro_hubpen.png"
+            },
+            {
+                name: "Tigre",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256400/tigre_unx0h8.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256400/tigre_bdqbwt.png"
+            },
+            {
+                name: "Vaca",
+                soundUrl: "https://res.cloudinary.com/difzxyfdt/video/upload/v1752256401/vaca_vmudmr.mp3",
+                imageUrl: "https://res.cloudinary.com/difzxyfdt/image/upload/v1752256401/vaca_wiq0at.png"
+            }
+        ];
+
+        // --- Funciones de Utilidad ---
+
+        // Función para cambiar entre pantallas
+        function showScreen(screenToShow) {
+            document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
+            screenToShow.classList.add('active');
+        }
+
+        // Algoritmo de Fisher-Yates para barajar arrays
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+
+        // --- Precarga de Recursos ---
+
+        const preloadedImages = {};
+        const preloadedSounds = {};
+
+        async function preloadAssets() {
+            showScreen(loadingScreen);
+            let loadedCount = 0;
+            const totalAssets = animalsData.length * 2; // 1 imagen + 1 sonido por animal
+
+            const updateProgress = () => {
+                loadedCount++;
+                const progress = Math.floor((loadedCount / totalAssets) * 100);
+                loadingProgress.textContent = `${progress}%`;
+            };
+
+            const imagePromises = animalsData.map(animal => {
+                return new Promise(resolve => {
+                    const img = new Image();
+                    img.src = animal.imageUrl;
+                    img.onload = () => {
+                        preloadedImages[animal.name] = img;
+                        updateProgress();
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        console.error(`Fallo al cargar imagen: ${animal.imageUrl}`);
+                        preloadedImages[animal.name] = null; // Marcar como fallida
+                        updateProgress();
+                        resolve();
+                    };
+                });
+            });
+
+            const soundPromises = animalsData.map(animal => {
+                return new Promise(resolve => {
+                    const audio = new Audio();
+                    audio.src = animal.soundUrl;
+                    audio.oncanplaythrough = () => {
+                        preloadedSounds[animal.name] = audio;
+                        updateProgress();
+                        resolve();
+                    };
+                    audio.onerror = () => {
+                        console.error(`Fallo al cargar sonido: ${animal.soundUrl}`);
+                        preloadedSounds[animal.name] = null; // Marcar como fallido
+                        updateProgress();
+                        resolve();
+                    };
+                    // Cargar el audio para activar canplaythrough/error
+                    audio.load();
+                });
+            });
+
+            await Promise.all([...imagePromises, ...soundPromises]);
+            console.log("Todos los recursos precargados.");
+            showScreen(userDetailScreen); // Ir a la pantalla de detalles de usuario después de la precarga
+        }
+
+        // --- Lógica del Juego ---
+
+        // Función para inicializar el juego
+        function initializeGame() {
+            score = 0;
+            questionCount = 0;
+            animalsToPlay = [...animalsData]; // Copiar la lista de animales
+            shuffleArray(animalsToPlay); // Barajar animales para orden aleatorio
+            updateLabels();
+            generateQuestion();
+            showScreen(gameScreen);
+        }
+
+        // Función para actualizar etiquetas de puntuación y contador de preguntas, y barra de progreso
+        function updateLabels() {
+            scoreLabel.textContent = `Puntuación: ${score}`;
+            questionCountLabel.textContent = `Pregunta: ${questionCount}/${maxQuestions}`;
+            const progressWidth = (questionCount / maxQuestions) * 100;
+            progressBar.style.width = `${progressWidth}%`;
+        }
+
+        // Función para generar una nueva pregunta
+        function generateQuestion() {
+            // Ocultar elementos de feedback anteriores y reiniciar animaciones
+            feedbackImage.classList.add('opacity-0');
+            feedbackText.classList.add('opacity-0');
+            feedbackImage.classList.remove('animate-feedback');
+            feedbackText.classList.remove('animate-feedback');
+
+            // Detener cualquier sonido que se esté reproduciendo al generar una nueva pregunta
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0; // Reiniciar audio al inicio
+                if (playSoundButton) {
+                    playSoundButton.classList.remove('playing-sound'); // Quitar indicador de reproducción
+                }
+            }
+
+            if (questionCount >= maxQuestions || animalsToPlay.length === 0) {
+                gameOver(); // Llama a gameOver que ahora lleva a la pantalla de resultados
+                return;
+            }
+
+            questionCount++;
+            updateLabels();
+
+            // Seleccionar el animal actual para la pregunta
+            currentAnimal = animalsToPlay.shift(); // Remover y usar el primer animal
+
+            // Seleccionar 3 animales incorrectos aleatorios
+            const incorrectAnimals = animalsData.filter(animal => animal.name !== currentAnimal.name);
+            shuffleArray(incorrectAnimals);
+            const options = [currentAnimal, ...incorrectAnimals.slice(0, 3)];
+            shuffleArray(options); // Barajar opciones
+
+            // Limpiar opciones anteriores y área de pregunta
+            optionsGrid.innerHTML = '';
+            questionArea.innerHTML = '';
+
+            // Crear contenido de la pregunta según el modo de juego
+            if (gameMode === 'sound') {
+                // Modo "Adivina el Sonido": Mostrar botón "Reproducir Sonido"
+                const newPlaySoundButton = document.createElement('button');
+                newPlaySoundButton.id = 'play-sound-button-dynamic'; // ID único para botón dinámico
+                newPlaySoundButton.className = 'button-primary w-full mb-8';
+                newPlaySoundButton.textContent = "Reproducir Sonido";
+                newPlaySoundButton.onclick = playSound; // Asignar manejador de clic
+                questionArea.appendChild(newPlaySoundButton);
+                playSoundButton = newPlaySoundButton; // Actualizar referencia global
+                
+                // No se llama a playSound() automáticamente aquí
+            } else if (gameMode === 'name') {
+                // Modo "¿Dónde está el...?": Mostrar mensaje genérico, NO el nombre del animal en las opciones
+                const questionPrompt = document.createElement('p');
+                questionPrompt.className = 'text-4xl font-bold text-text-dark mb-8';
+                questionPrompt.textContent = `¡Encuentra el animal!`; // Mensaje genérico
+                questionArea.appendChild(questionPrompt);
+            }
+
+            // Crear botones de imagen para cada opción
+            options.forEach(animalOption => {
+                const button = document.createElement('button');
+                button.className = 'button-option flex flex-col items-center justify-center';
+                button.setAttribute('data-animal', animalOption.name);
+                button.onclick = () => checkAnswer(animalOption.name);
+
+                // Usar imagen precargada si está disponible, de lo contrario fallback
+                const imgSource = preloadedImages[animalOption.name] ? preloadedImages[animalOption.name].src : animalOption.imageUrl;
+                const img = document.createElement('img');
+                img.src = imgSource;
+                img.alt = animalOption.name;
+                img.className = 'w-24 h-24 object-contain mb-2 rounded-lg'; // Ajustar tamaño de imagen
+                img.onerror = () => { img.src = 'https://placehold.co/150x150/cccccc/000000?text=Error'; console.error(`Error al cargar imagen: ${animalOption.imageUrl}`); };
+                
+                button.appendChild(img);
+
+                // Solo agregar la etiqueta (nombre del animal) si el modo de juego es 'sound'
+                if (gameMode === 'sound') {
+                    const label = document.createElement('span');
+                    label.textContent = animalOption.name;
+                    label.className = 'text-lg font-medium text-text-dark'; /* Usar color de texto oscuro */
+                    button.appendChild(label);
+                }
+                
+                optionsGrid.appendChild(button);
+            });
+        }
+
+        // Función para reproducir el sonido
+        function playSound() {
+            // Detener cualquier sonido que se esté reproduciendo antes de iniciar uno nuevo
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0; // Reiniciar audio al inicio
+            }
+
+            if (currentAnimal && preloadedSounds[currentAnimal.name]) {
+                currentAudio = preloadedSounds[currentAnimal.name]; // Usar objeto de audio precargado
+                currentAudio.play().catch(e => {
+                    console.error("Error al reproducir el sonido:", e);
+                });
+                // Agregar indicador de reproducción al botón
+                if (playSoundButton) {
+                    playSoundButton.classList.add('playing-sound');
+                    currentAudio.onended = () => {
+                        if (playSoundButton) { // Verificar si el botón aún existe
+                            playSoundButton.classList.remove('playing-sound');
+                        }
+                    };
+                }
+            } else {
+                console.warn("No hay sonido precargado para reproducir o URL no válida.");
+            }
+        }
+
+        // Función para verificar la respuesta del usuario
+        function checkAnswer(chosenAnimalName) {
+            // Detener el sonido inmediatamente cuando se elige una respuesta
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0; // Reiniciar audio al inicio
+                if (playSoundButton) {
+                    playSoundButton.classList.remove('playing-sound'); // Quitar indicador de reproducción
+                }
+            }
+
+            const isCorrect = (chosenAnimalName === currentAnimal.name);
+
+            // Establecer imagen y texto de feedback
+            feedbackImage.src = preloadedImages[currentAnimal.name] ? preloadedImages[currentAnimal.name].src : currentAnimal.imageUrl;
+            feedbackImage.classList.remove('opacity-0');
+            feedbackImage.classList.add('animate-feedback'); // Aplicar animación
+
+            if (isCorrect) {
+                score++;
+                feedbackText.textContent = "¡Correcto!";
+                feedbackText.style.color = 'var(--color-feedback-correct)'; /* Usar color verde de feedback */
+            } else {
+                feedbackText.textContent = `¡Incorrecto! Era el ${currentAnimal.name}`;
+                feedbackText.style.color = 'var(--color-feedback-incorrect)'; /* Usar color rojo de feedback */
+            }
+
+            feedbackText.classList.remove('opacity-0');
+            feedbackText.classList.add('animate-feedback'); // Aplicar animación al texto
+
+            updateLabels();
+
+            // Deshabilitar temporalmente los botones de opción
+            Array.from(optionsGrid.children).forEach(button => button.disabled = true);
+
+            // Programar la siguiente pregunta después de un breve retraso
+            setTimeout(() => {
+                Array.from(optionsGrid.children).forEach(button => button.disabled = false); // Volver a habilitar botones
+                generateQuestion();
+            }, 2000); // Esperar 2 segundos
+        }
+
+        // Función para manejar el fin del juego
+        function gameOver() {
+            // Guardar la puntuación
+            window.saveHighScoreToFirestore(score); 
+            
+            // Ir a la pantalla de resultados y cargar la tabla de puntuaciones en su contenedor específico
+            showScreen(resultScreen);
+            window.loadLeaderboardFromFirestore('result-leaderboard-list'); 
+            // También actualizar las etiquetas de puntuación final
+            document.getElementById('final-score-label').textContent = `Tu puntuación final: ${score}`;
+            window.loadHighScoreFromFirestore().then(highScore => {
+                document.getElementById('final-high-score-label').textContent = `Puntuación más alta: ${highScore}`;
+            });
+        }
+
+        // --- Lógica de Puntuación Alta (ahora usa principalmente Firestore, con localStorage como respaldo) ---
+        async function loadHighScore() {
+            currentHighScore = await window.loadHighScoreFromFirestore();
+            highScoreLabel.textContent = `Puntuación más alta: ${currentHighScore}`;
+        }
+
+        // --- Event Listeners ---
+        startUserDetailsButton.addEventListener('click', async () => {
+            const name = userNameInput.value.trim();
+            const age = parseInt(userAgeInput.value, 10);
+
+            if (name && !isNaN(age) && age > 0) {
+                window.setUserNameAndAge(name, age); // Actualizar datos de usuario globales
+                await window.saveUserDataToFirestore(name, age); // Guardar en Firestore (o advertir si no está listo)
+                loadHighScore(); // Cargar puntuación alta para la pantalla de inicio
+                window.loadLeaderboardFromFirestore('start-leaderboard-list'); // Cargar tabla de puntuaciones para la pantalla de inicio
+                showScreen(startScreen);
+            } else {
+                alert("Por favor, introduce un nombre y una edad válida.");
+            }
+        });
+
+        modeSoundButton.addEventListener('click', () => {
+            gameMode = 'sound';
+            initializeGame();
+        });
+
+        modeNameButton.addEventListener('click', () => {
+            gameMode = 'name';
+            initializeGame();
+        });
+
+        playAgainButton.addEventListener('click', () => {
+            showScreen(startScreen); // Volver a la pantalla de inicio para elegir modo
+            loadHighScore(); // Recargar puntuación alta para la pantalla de inicio
+            window.loadLeaderboardFromFirestore('start-leaderboard-list'); // Recargar tabla de puntuaciones para la pantalla de inicio
+        });
+
+        // Llamada inicial para iniciar la precarga de recursos.
+        // La inicialización de Firebase se ejecuta en paralelo a través de su propio listener DOMContentLoaded.
+        document.addEventListener('DOMContentLoaded', preloadAssets);
+    </script>
+</body>
+</html>
